@@ -1,0 +1,72 @@
+# Known failures, so CI fails on regressions rather than on bugs that are
+# already diagnosed. Anything not listed here is expected to pass on both
+# simulators. When an upstream fix lands, the report marks the entry
+# "now passes!"; delete it here so the fix is protected from then on.
+#
+# Format:
+#   <kernel>:
+#     zeonica: fail       # omit (or "pass") for simulators expected to pass
+#     vectorcgra: fail
+#     reason: why, with the upstream component responsible
+#
+# Diagnosed on neura 21f0fa1, zeonica 27f8bff, VectorCGRA 8060b2b.
+
+gemv:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    neura: LlvmGEPToNeuraGEP drops the GEP element type. clang -O3 emits the
+    row pointer as `getelementptr i8, ptr %A, (i << 4)` (a byte offset), which
+    neura treats as an element index, so rows 1..3 read A[16..] instead of
+    A[4..]. Both simulators reproduce the same wrong result (Zeonica's own
+    gemv testbench works around this by laying A out with row stride 16).
+
+conv:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    neura: same GEP element-type bug as gemv (`getelementptr i8` byte offsets
+    for the output row and the input/filter windows); stores land at wrong and
+    out-of-bounds addresses.
+
+jacobi2d:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    neura: same GEP element-type bug (`getelementptr i8, ptr %A, ±32` and `±4`
+    byte offsets for the neighbour rows/columns). VectorCGRA additionally never
+    reaches RETURN (stalls).
+
+gemm:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    neura: 2-D `getelementptr [N x i32], ptr %A, i, k` loses the row stride
+    (same root cause: the GEP source element type is dropped). zeonica panics
+    "Phi operation: both sources have the same predicate"; VectorCGRA never
+    reaches RETURN (stalls).
+
+bicg:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    neura emits MEMSET (clang turns the `s[j] = 0` loop into llvm.memset),
+    which neither simulator implements (zeonica: unknown instruction;
+    VectorCGRA: no mapping in validation/script_generator.py). The kernel
+    also hits the GEP element-type bug (`getelementptr i8, ptr %A, i << 5`).
+
+fft:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    neura emits CAST_TRUNC, which neither simulator implements (zeonica:
+    unknown instruction; VectorCGRA: no mapping in
+    validation/script_generator.py).
+
+spmv:
+  zeonica: fail
+  vectorcgra: fail
+  reason: >-
+    The 4x unrolled loop (`#pragma clang loop unroll_count(4)`) produces
+    ICMP_ULT, which VectorCGRA's script_generator.py cannot map; zeonica
+    deadlocks after 11 cycles without executing any store.

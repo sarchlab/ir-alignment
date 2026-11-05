@@ -1,0 +1,14 @@
+name: histogram
+description: "20 samples into 5 buckets: integer divide plus read-modify-write on data-dependent addresses"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/histogram/histogram_int.cpp
+function: kernel
+# The same customized backtracking Neura's own e2e test uses for this kernel.
+mapping_options: "mapping-strategy=heuristic backtrack-config=customized"
+args:
+  # Values stay in [MIN, MAX) = [1, 19) so every bucket index is in range.
+  - {name: input, kind: array, size: 20, init: "1 + (i * 7) % 18"}
+  - {name: histogram, kind: array, size: 5, init: "i"}
+
+# Runs finish in a few hundred cycles; the cap turns a hang into a quick
+# failure (VectorCGRA's Verilator backend runs ~140 cycles/s).
+vectorcgra: {max_cycles: 8000, timeout: 1800}

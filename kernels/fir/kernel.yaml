@@ -1,0 +1,13 @@
+name: fir
+description: "32-tap FIR dot product, result returned by value"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/fir/fir_int.cpp
+function: kernel
+returns_value: true
+args:
+  - {name: input, kind: array, size: 32, init: "i + 1"}
+  - {name: output, kind: array, size: 32, init: "0"}
+  - {name: coefficient, kind: array, size: 32, values: [0, 1, 3, -2, 0, 0, -3, 1, 0, 1, 3, -2, 0, 0, -3, 1, 0, 1, 3, -2, 0, 0, -3, 1, 0, 1, 3, -2, 0, 0, -3, 1]}
+
+# Runs finish in a few hundred cycles; the cap turns a hang into a quick
+# failure (VectorCGRA's Verilator backend runs ~140 cycles/s).
+vectorcgra: {max_cycles: 8000, timeout: 1800}

@@ -1,0 +1,12 @@
+[submodule "third_party/neura"]
+	path = third_party/neura
+	url = https://github.com/coredac/neura.git
+	branch = main
+[submodule "third_party/zeonica"]
+	path = third_party/zeonica
+	url = https://github.com/sarchlab/zeonica.git
+	branch = main
+[submodule "third_party/VectorCGRA"]
+	path = third_party/VectorCGRA
+	url = https://github.com/tancheng/VectorCGRA.git
+	branch = master

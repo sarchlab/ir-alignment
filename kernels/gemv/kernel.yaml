@@ -1,0 +1,12 @@
+name: gemv
+description: "y = A * x with a 4x4 matrix"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/gemv/gemv_int.cpp
+function: kernel_gemv_int
+args:
+  - {name: A, kind: array, size: 16, init: "(i * 5) % 11 - 3"}
+  - {name: x, kind: array, size: 4, init: "i * 2 - 3"}
+  - {name: y, kind: array, size: 4, init: "-7"}
+
+# Runs finish in a few hundred cycles; the cap turns a hang into a quick
+# failure (VectorCGRA's Verilator backend runs ~140 cycles/s).
+vectorcgra: {max_cycles: 8000, timeout: 1800}

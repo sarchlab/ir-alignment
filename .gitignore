@@ -1,0 +1,6 @@
+# Pipeline outputs (tools/align.py --out) and the shared Verilated model.
+/build/
+# Zeonica trace logs.
+*.json.log
+*.trace.log
+__pycache__/

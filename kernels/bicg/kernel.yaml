@@ -1,0 +1,13 @@
+name: bicg
+description: "BiCG sub-kernel s = A^T r, q = A p with an 8x8 matrix"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/bicg/bicg_int.c
+function: kernel_bicg_int
+args:
+  - {name: A, kind: array, size: 64, init: "(i * 11) % 13 - 6"}
+  - {name: p, kind: array, size: 8, init: "i - 3"}
+  - {name: r, kind: array, size: 8, init: "5 - i * 2"}
+  - {name: s, kind: array, size: 8, init: "77"}
+  - {name: q, kind: array, size: 8, init: "-77"}
+
+# 64 inner iterations at II~10.
+vectorcgra: {max_cycles: 20000, timeout: 2400}

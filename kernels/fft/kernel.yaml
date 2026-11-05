@@ -1,0 +1,16 @@
+name: fft
+description: "256-point radix-2 integer FFT (8 stages, 1024 butterflies), in place"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/fft/fft_int.c
+function: kernel
+args:
+  - {name: data_real, kind: array, size: 256, init: "i % 23 - 11"}
+  - {name: data_imag, kind: array, size: 256, init: "(i * 5) % 7 - 3"}
+  - {name: coef_real, kind: array, size: 256, init: "(i % 3) - 1"}
+  - {name: coef_imag, kind: array, size: 256, init: "1 - (i % 2)"}
+
+# 1024 butterflies at II~20 plus loop-nest overhead: tens of thousands of
+# cycles. This is the slowest case in VectorCGRA (~140 cycles/s on the
+# Verilator backend, ~1 cycle/s in pure Python), so it gets the largest
+# budgets; the job-level GitHub limit is 355 minutes.
+vectorcgra: {max_cycles: 600000, timeout: 14400}
+zeonica: {timeout: 3600}

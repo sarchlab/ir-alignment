@@ -1,0 +1,11 @@
+name: conv
+description: "2D convolution, 6x6 image with a 3x3 filter into a 4x4 output (4-deep loop nest)"
+source: kernels/conv/conv2d_int.c
+function: kernel_conv2d_int
+args:
+  - {name: in, kind: array, size: 36, init: "(i * 7) % 10 - 4"}
+  - {name: w, kind: array, size: 9, values: [1, 0, -1, 2, 0, -2, 1, 0, -1]}
+  - {name: out, kind: array, size: 16, init: "123"}
+
+# 16 outputs x 9 taps through a 4-deep nest (~3.3k cycles observed).
+vectorcgra: {max_cycles: 50000, timeout: 3000}
