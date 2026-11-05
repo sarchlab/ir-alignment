@@ -139,8 +139,14 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.run == 'true'
     runs-on: ubuntu-22.04
-    # A cold LLVM build takes ~3-4 h on a hosted runner; it is cached after.
+    # Normally ~10-15 min: LLVM comes prebuilt from a release of this repo.
+    # Only when neura moves to a new LLVM commit is LLVM built here (~3-4 h,
+    # once) and then published so later runs skip it.
     timeout-minutes: 350
+    permissions:
+      contents: write  # publish the prebuilt LLVM release (non-PR runs only)
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - name: checkout commits under test
@@ -154,37 +160,66 @@ jobs:
       - name: install toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build ccache lld clang
+          sudo apt-get install -y -qq ninja-build ccache lld clang zstd
           python -m pip install pybind11==2.13.6 nanobind==2.15.0 pyyaml
           echo "LLVM_COMMIT=$(scripts/llvm_commit.sh)" >> "$GITHUB_ENV"
 
+      - name: fetch prebuilt LLVM ${{ env.LLVM_COMMIT }}
+        id: prebuilt
+        run: |
+          if scripts/fetch_llvm.sh "${LLVM_DIR}"; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no prebuilt LLVM for ${LLVM_COMMIT}; building it once and publishing it"
+            rm -rf "${LLVM_DIR}"
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fallback when no release exists yet: build from source.
       - name: LLVM build cache
+        if: steps.prebuilt.outputs.hit != 'true'
         id: llvm-cache
         uses: actions/cache@v4
         with:
           path: ${{ env.LLVM_DIR }}
           key: ${{ runner.os }}-llvm-py${{ env.NEURA_PYTHON }}-${{ env.LLVM_COMMIT }}-v1
-
-      - name: ccache
+      - name: LLVM ccache
+        if: steps.prebuilt.outputs.hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-ccache-${{ env.LLVM_COMMIT }}-${{ needs.resolve.outputs.neura_sha }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-${{ env.LLVM_COMMIT }}-
-
+          key: ${{ runner.os }}-ccache-llvm-${{ env.LLVM_COMMIT }}
       - name: build LLVM ${{ env.LLVM_COMMIT }}
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: steps.prebuilt.outputs.hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
         run: PYTHON="$(which python)" scripts/build_llvm.sh "${LLVM_DIR}"
+      - name: publish prebuilt LLVM
+        if: steps.prebuilt.outputs.hit != 'true' && github.event_name != 'pull_request'
+        run: |
+          asset="llvm-${LLVM_COMMIT}-$(uname -m)-ubuntu22.04.tar.zst"
+          scripts/package_llvm.sh "${LLVM_DIR}" "${RUNNER_TEMP}/${asset}"
+          gh release create "llvm-${LLVM_COMMIT}" "${RUNNER_TEMP}/${asset}" --latest=false \
+              --title "Prebuilt LLVM ${LLVM_COMMIT}" \
+              --notes "LLVM/MLIR at neura's pinned commit, trimmed for building neura (scripts/package_llvm.sh). Used by the alignment workflow via scripts/fetch_llvm.sh." \
+            || gh release upload "llvm-${LLVM_COMMIT}" "${RUNNER_TEMP}/${asset}" --clobber
 
+      - name: neura ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}-neura
+          key: ${{ runner.os }}-ccache-neura-${{ env.LLVM_COMMIT }}-${{ needs.resolve.outputs.neura_sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-neura-${{ env.LLVM_COMMIT }}-
       - name: build neura
+        env:
+          CCACHE_DIR: ${{ env.CCACHE_DIR }}-neura
         run: |
           echo "LLVM_BUILD_DIR=${LLVM_DIR}/build" >> "$GITHUB_ENV"
           LLVM_BUILD_DIR="${LLVM_DIR}/build" PYTHON="$(which python)" scripts/build_neura.sh
 
       - name: compile kernels with neura + compute golden results
         run: |
-          python tools/align.py run --all --sims "" --stages compile,prepare \
+          # Kernels compile independently and neura's mapper is single-threaded.
+          python tools/align.py run --all --sims "" --stages compile,prepare -j 16 \
             || echo "::warning::some kernels failed to compile; see the report job"
 
       - uses: actions/upload-artifact@v4

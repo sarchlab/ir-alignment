@@ -244,6 +244,29 @@ def cmd_run(args) -> int:
   stages = args.stages.split(",")
   out_root = Path(args.out)
   failures = []
+  if args.jobs > 1 and not sims:
+    # Compile/prepare only: kernels are independent, and Neura's mapper is
+    # single-threaded, so run them side by side.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def compile_one(name):
+      spec = load_spec(name)
+      d = kdir(out_root, spec.name)
+      ok = True
+      if "compile" in stages and not args.neura_yaml:
+        ok = stage_compile(spec, d, args)
+      if ok and "prepare" in stages:
+        ok = stage_prepare(spec, d, args)
+      print(f"  {name:<10} {'ok' if ok else 'FAILED'}", flush=True)
+      return name, ok
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+      results = list(pool.map(compile_one, names))
+    failures = [n for n, ok in results if not ok]
+    print(f"\n{len(names) - len(failures)}/{len(names)} kernels compiled and prepared" +
+          (f"; failed: {', '.join(failures)}" if failures else ""))
+    return 1 if failures else 0
+
   for name in names:
     spec = load_spec(name)
     d = kdir(out_root, spec.name)
@@ -443,6 +466,8 @@ def main():
                    help="override the per-kernel backend from kernel.yaml")
   run.add_argument("--vectorcgra-workdir", default=None,
                    help="shared working dir for the Verilated model (default: <out>/_vectorcgra_model)")
+  run.add_argument("-j", "--jobs", type=int, default=1,
+                   help="parallel kernels for compile/prepare-only runs (--sims '')")
   run.add_argument("--timeout-scale", type=float, default=float(os.environ.get("ALIGN_TIMEOUT_SCALE", "1")))
   run.set_defaults(func=cmd_run)
 

@@ -83,7 +83,8 @@ requirements (`scripts/setup_vectorcgra.sh`), Verilator.
 
 ```bash
 git submodule update --init --recursive      # see scripts/checkout_refs.sh
-scripts/build_llvm.sh ~/llvm-project         # once; ~30 min on 40 cores
+scripts/fetch_llvm.sh ~/llvm-project         # prebuilt release (needs gh), or:
+# scripts/build_llvm.sh ~/llvm-project       # from source; ~30 min on 40 cores
 LLVM_BUILD_DIR=~/llvm-project/build scripts/build_neura.sh
 (cd tools/zeonica-runner && go build -o ../../build/bin/zeonica-runner .)
 
@@ -105,10 +106,24 @@ submodule commits), every 3 hours against the **latest** upstream commits
 `repository_dispatch` from the upstream repos, and manually with arbitrary
 refs. See [docs/upstream-trigger.md](docs/upstream-trigger.md).
 
-Jobs: `neura → IR` (LLVM build cached by commit) → `zeonica` and one
-`vectorcgra / <kernel>` job per kernel (in parallel, with the Verilated model
-built by `vectorcgra model`) → `report`. The report job writes a table to the
-run summary and fails on any result worse than `expected.yaml`.
+Jobs: `neura → IR` → `zeonica` and one `vectorcgra / <kernel>` job per
+kernel (in parallel, with the Verilated model built by `vectorcgra model`)
+→ `report`. The report job writes a table to the run summary and fails on any
+result worse than `expected.yaml`.
+
+### Keeping runs fast
+
+| what | how | typical cost |
+|---|---|---|
+| LLVM/MLIR | prebuilt, trimmed package (`scripts/package_llvm.sh`, 334 MB) downloaded from this repo's release `llvm-<commit>` by `scripts/fetch_llvm.sh` | ~1 min |
+| neura | built against it with ccache | ~2–8 min |
+| kernel compilation | all kernels in parallel (`align.py run -j`) | ~4 min (spmv mapping dominates) |
+| VectorCGRA model | Verilated once per VectorCGRA commit, cached; runs alongside neura | 20 min on a new commit, else ~1 min |
+| simulation | one job per kernel, in parallel | minutes each |
+
+A typical run takes about 20–30 minutes. LLVM is only built from source when
+neura moves to a new LLVM commit and no `llvm-<commit>` release exists yet;
+that run (~3–4 h) publishes the package so every later run downloads it.
 
 ### Timeouts
 
@@ -118,7 +133,7 @@ run summary and fails on any result worse than `expected.yaml`.
 | wall clock per VectorCGRA kernel | `vectorcgra.timeout` | 30–50 min, 4 h for fft |
 | wall clock per Zeonica kernel | `zeonica.timeout` | 15 min, 1 h for fft |
 | Neura compile per kernel | `timeouts.neura` | 10 min |
-| GitHub job limits | workflow `timeout-minutes` | 350 min for a cold LLVM build, 355 per VectorCGRA kernel |
+| GitHub job limits | workflow `timeout-minutes` | 350 min for the neura job (only reached when LLVM must be built from source), 355 per VectorCGRA kernel |
 
 ### Known failures
 
