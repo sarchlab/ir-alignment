@@ -82,6 +82,7 @@ def run_logged(cmd, log, cwd=None, timeout=None):
 
 def compile_kernel(spec: KernelSpec, out_dir: Path, arch_spec: Path = None) -> Path:
   """Compiles a kernel with Neura. Returns the generated instruction YAML."""
+  spec.require_source()
   out_dir.mkdir(parents=True, exist_ok=True)
   arch_spec = Path(arch_spec or os.environ.get("NEURA_ARCH_SPEC", DEFAULT_ARCH_SPEC))
   clang_name = "clang++" if spec.language == "c++" else "clang"

@@ -71,6 +71,13 @@ class KernelSpec:
 
   # --- Derived helpers -----------------------------------------------------
 
+  def require_source(self) -> Path:
+    if not self.source.exists():
+      raise FileNotFoundError(
+          f"{self.name}: source not found: {self.source} "
+          "(is the zeonica submodule checked out recursively?)")
+    return self.source
+
   @property
   def arrays(self) -> List[Arg]:
     return [a for a in self.args if a.kind == "array"]
@@ -143,8 +150,8 @@ def load_spec(name_or_path: str) -> KernelSpec:
     alt = directory / source_entry
     if alt.exists():
       source = alt
-  if not source.exists():
-    raise FileNotFoundError(f"{name}: source not found: {source_entry}")
+  # A missing source only matters for the compile/prepare stages (see
+  # KernelSpec.require_source); simulator-only jobs don't check it out.
 
   language = raw.get("language")
   if language is None:

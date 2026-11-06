@@ -50,6 +50,7 @@ int main(void) {{
 
 
 def compute_golden(spec: KernelSpec, out_dir: Path) -> dict:
+  spec.require_source()
   out_dir.mkdir(parents=True, exist_ok=True)
   ext = ".cpp" if spec.language == "c++" else ".c"
   harness = out_dir / f"golden_harness{ext}"

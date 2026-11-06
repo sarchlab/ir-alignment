@@ -74,7 +74,7 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
       tested_key: ${{ steps.key.outputs.tested_key }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: mode
         run: |
@@ -109,7 +109,7 @@ jobs:
       - name: already tested?
         id: tested
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.force)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .alignment-tested
           key: ${{ steps.key.outputs.tested_key }}
@@ -148,13 +148,13 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: checkout commits under test
         env:
           SUBMODULES: neura zeonica
         run: scripts/checkout_refs.sh "${{ needs.resolve.outputs.neura_sha }}" "${{ needs.resolve.outputs.zeonica_sha }}" ""
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.NEURA_PYTHON }}
       - name: install toolchain
@@ -179,13 +179,13 @@ jobs:
       - name: LLVM build cache
         if: steps.prebuilt.outputs.hit != 'true'
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.LLVM_DIR }}
           key: ${{ runner.os }}-llvm-py${{ env.NEURA_PYTHON }}-${{ env.LLVM_COMMIT }}-v1
       - name: LLVM ccache
         if: steps.prebuilt.outputs.hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ runner.os }}-ccache-llvm-${{ env.LLVM_COMMIT }}
@@ -203,7 +203,7 @@ jobs:
             || gh release upload "llvm-${LLVM_COMMIT}" "${RUNNER_TEMP}/${asset}" --clobber
 
       - name: neura ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}-neura
           key: ${{ runner.os }}-ccache-neura-${{ env.LLVM_COMMIT }}-${{ needs.resolve.outputs.neura_sha }}
@@ -222,7 +222,7 @@ jobs:
           python tools/align.py run --all --sims "" --stages compile,prepare -j 16 \
             || echo "::warning::some kernels failed to compile; see the report job"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: programs
@@ -238,20 +238,20 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: checkout commits under test
         env:
           SUBMODULES: zeonica
         run: scripts/checkout_refs.sh "" "${{ needs.resolve.outputs.zeonica_sha }}" ""
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: third_party/zeonica/go.mod
           cache-dependency-path: third_party/zeonica/go.sum
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.NEURA_PYTHON }}
       - run: python -m pip install pyyaml
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: programs
           path: build
@@ -261,8 +261,17 @@ jobs:
           go mod tidy
           go build -o "${GITHUB_WORKSPACE}/build/bin/zeonica-runner" .
       - name: run kernels on zeonica
-        run: python tools/align.py run --all --sims zeonica --stages sim || true
-      - uses: actions/upload-artifact@v4
+        run: |
+          # Wrong results are judged by the report job; here only make sure
+          # every kernel actually produced a status (i.e. nothing crashed).
+          python tools/align.py run --all --sims zeonica --stages sim || true
+          missing=0
+          for k in build/*/program.yaml; do
+            d=$(dirname "$k")
+            [[ -f "$d/status_zeonica.json" ]] || { echo "::error::$(basename "$d"): zeonica stage did not run"; missing=1; }
+          done
+          exit "${missing}"
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: results-zeonica
@@ -279,12 +288,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: checkout commits under test
         env:
           SUBMODULES: vectorcgra
         run: scripts/checkout_refs.sh "" "" "${{ needs.resolve.outputs.vectorcgra_sha }}"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.VECTORCGRA_PYTHON }}
       - name: install VectorCGRA dependencies
@@ -297,7 +306,7 @@ jobs:
           (cd "$(mktemp -d)" && python -W ignore "${GITHUB_WORKSPACE}/tools/vcgra_ext/test_udiv.py" --verilator)
       - name: model cache
         id: model-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VCGRA_MODEL_DIR }}
           key: vcgra-model-${{ needs.resolve.outputs.vectorcgra_sha }}-${{ hashFiles('tools/vectorcgra_runner.py') }}-${{ env.VERILATOR_VERSION }}-py${{ env.VECTORCGRA_PYTHON }}
@@ -307,7 +316,7 @@ jobs:
           mkdir -p "${VCGRA_MODEL_DIR}"
           cd "${VCGRA_MODEL_DIR}"
           python -W ignore "${GITHUB_WORKSPACE}/tools/vectorcgra_runner.py" --build-model-only
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vectorcgra-model
           path: ${{ env.VCGRA_MODEL_DIR }}
@@ -325,21 +334,21 @@ jobs:
       matrix:
         kernel: ${{ fromJson(needs.resolve.outputs.kernels) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: checkout commits under test
         env:
           SUBMODULES: vectorcgra
         run: scripts/checkout_refs.sh "" "" "${{ needs.resolve.outputs.vectorcgra_sha }}"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.VECTORCGRA_PYTHON }}
       - name: install VectorCGRA dependencies
         run: scripts/setup_vectorcgra.sh
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: programs
           path: build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: vectorcgra-model
           path: ${{ env.VCGRA_MODEL_DIR }}
@@ -348,7 +357,13 @@ jobs:
           python tools/align.py run "${{ matrix.kernel }}" --sims vectorcgra --stages sim \
             --vectorcgra-workdir "${VCGRA_MODEL_DIR}" || true
           grep -h "^vectorcgra:" "build/${{ matrix.kernel }}/vectorcgra.log" || true
-      - uses: actions/upload-artifact@v4
+          # Wrong results are judged by the report job; fail here only if the
+          # stage itself never ran (a crash in the harness, not the kernel).
+          if [[ -f "build/${{ matrix.kernel }}/program.yaml" && ! -f "build/${{ matrix.kernel }}/status_vectorcgra.json" ]]; then
+            echo "::error::vectorcgra stage did not run for ${{ matrix.kernel }}"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: results-vectorcgra-${{ matrix.kernel }}
@@ -364,20 +379,20 @@ jobs:
     if: always() && needs.resolve.outputs.run == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: checkout commits under test
         env:
           SUBMODULES: zeonica
         run: scripts/checkout_refs.sh "" "${{ needs.resolve.outputs.zeonica_sha }}" ""
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.NEURA_PYTHON }}
       - run: python -m pip install pyyaml
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: programs
           path: build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: results-*
           path: build
@@ -392,7 +407,7 @@ jobs:
             echo
             python tools/align.py summary --markdown
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: alignment-report
@@ -408,7 +423,7 @@ jobs:
         if: success() && needs.resolve.outputs.mode == 'latest'
         run: mkdir -p .alignment-tested && date > .alignment-tested/stamp
       - if: success() && needs.resolve.outputs.mode == 'latest'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .alignment-tested
           key: ${{ needs.resolve.outputs.tested_key }}
@@ -428,7 +443,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: update gitlinks
         id: bump
         run: |
