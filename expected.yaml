@@ -20,6 +20,8 @@ gemv:
     neura treats as an element index, so rows 1..3 read A[16..] instead of
     A[4..]. Both simulators reproduce the same wrong result (Zeonica's own
     gemv testbench works around this by laying A out with row stride 16).
+    Confirmed: scaling GEP indices by the element size in a local neura build
+    makes gemv, conv and gemm pass on Zeonica (not applied here; it is a neura fix).
 
 conv:
   zeonica: fail
@@ -69,4 +71,5 @@ spmv:
   reason: >-
     The 4x unrolled loop (`#pragma clang loop unroll_count(4)`) produces
     ICMP_ULT, which VectorCGRA's script_generator.py cannot map; zeonica
-    deadlocks after 11 cycles without executing any store.
+    reaches RETURN after 14 cycles without executing any store
+    (output keeps its initial values).
