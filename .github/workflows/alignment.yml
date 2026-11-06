@@ -1,0 +1,488 @@
+# End-to-end IR alignment: Neura compiles every kernel in kernels/ and the
+# generated IR is executed on both Zeonica and VectorCGRA; each final memory
+# image / return value is checked against the kernel's C source run natively.
+#
+# When it runs:
+#   * push / pull_request      -> the submodule commits pinned in this repo
+#   * schedule (every 3 hours) -> the latest commit of every upstream branch;
+#                                 skipped when that exact combination has
+#                                 already been tested
+#   * repository_dispatch      -> an upstream repo announced a new commit
+#                                 (see docs/upstream-trigger.md)
+#   * workflow_dispatch        -> manual, optionally with explicit refs
+name: alignment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 */3 * * *"
+  repository_dispatch:
+    types: [upstream-updated]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pinned = submodule commits in this repo, latest = upstream branch heads"
+        type: choice
+        options: [latest, pinned]
+        default: latest
+      neura_ref:
+        description: "neura branch/tag/SHA override (optional)"
+        required: false
+      zeonica_ref:
+        description: "zeonica branch/tag/SHA override (optional)"
+        required: false
+      vectorcgra_ref:
+        description: "VectorCGRA branch/tag/SHA override (optional)"
+        required: false
+      force:
+        description: "run even if this exact combination was already tested"
+        type: boolean
+        default: false
+
+concurrency:
+  group: alignment-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NEURA_PY_VERSION: "3.11"
+  VECTORCGRA_PY_VERSION: "3.12"
+  LLVM_DIR: ${{ github.workspace }}/llvm-project
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_COMPRESS: "true"
+  CCACHE_MAXSIZE: "4G"
+  # The Verilated CgraRTL model is built once and reused by every kernel job;
+  # pymtl3's import cache needs the same absolute path everywhere.
+  VCGRA_MODEL_DIR: ${{ github.workspace }}/build/_vectorcgra_model
+  PYMTL_VERILATOR_INCLUDE_DIR: /usr/share/verilator/include
+
+jobs:
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: resolve commits
+    runs-on: ubuntu-22.04
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      neura_sha: ${{ steps.refs.outputs.neura_sha }}
+      zeonica_sha: ${{ steps.refs.outputs.zeonica_sha }}
+      vectorcgra_sha: ${{ steps.refs.outputs.vectorcgra_sha }}
+      kernels: ${{ steps.kernels.outputs.kernels }}
+      run: ${{ steps.decide.outputs.run }}
+      tested_key: ${{ steps.key.outputs.tested_key }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: mode
+        run: |
+          case "${{ github.event_name }}" in
+            push|pull_request) mode=pinned ;;
+            workflow_dispatch) mode="${{ inputs.mode }}" ;;
+            *) mode=latest ;;
+          esac
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+
+      - id: refs
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          NEURA_REF: ${{ inputs.neura_ref || github.event.client_payload.neura_ref }}
+          ZEONICA_REF: ${{ inputs.zeonica_ref || github.event.client_payload.zeonica_ref }}
+          VECTORCGRA_REF: ${{ inputs.vectorcgra_ref || github.event.client_payload.vectorcgra_ref }}
+        run: scripts/resolve_refs.sh | tee -a "$GITHUB_OUTPUT"
+
+      - id: kernels
+        run: |
+          kernels=$(ls kernels/*/kernel.yaml | xargs -n1 dirname | xargs -n1 basename | jq -R . | jq -s -c .)
+          echo "kernels=${kernels}" >> "$GITHUB_OUTPUT"
+          echo "kernels: ${kernels}"
+
+      - id: key
+        run: |
+          key="alignment-tested-${{ steps.refs.outputs.neura_sha }}-${{ steps.refs.outputs.zeonica_sha }}-${{ steps.refs.outputs.vectorcgra_sha }}-${{ hashFiles('kernels/**', 'tools/**', 'arch/**', 'expected.yaml', '.github/workflows/alignment.yml') }}"
+          echo "tested_key=${key}" >> "$GITHUB_OUTPUT"
+
+      # Polling (schedule) and manual runs skip a commit combination that has
+      # already passed; push/PR/dispatch always run.
+      - name: already tested?
+        id: tested
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.force)
+        uses: actions/cache/restore@v6
+        with:
+          path: .alignment-tested
+          key: ${{ steps.key.outputs.tested_key }}
+          lookup-only: true
+
+      - id: decide
+        run: |
+          if [[ "${{ steps.tested.outputs.cache-hit }}" == "true" ]]; then
+            run=false
+          else
+            run=true
+          fi
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Commits under test (${{ steps.mode.outputs.mode }})"
+            echo "| repo | commit |"
+            echo "|---|---|"
+            echo "| neura | \`${{ steps.refs.outputs.neura_sha }}\` |"
+            echo "| zeonica | \`${{ steps.refs.outputs.zeonica_sha }}\` |"
+            echo "| VectorCGRA | \`${{ steps.refs.outputs.vectorcgra_sha }}\` |"
+            [[ "${run}" == "true" ]] || echo "_This combination already passed — skipped._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  neura:
+    name: neura → IR
+    needs: resolve
+    if: needs.resolve.outputs.run == 'true'
+    runs-on: ubuntu-22.04
+    # Normally ~10-15 min: LLVM comes prebuilt from a release of this repo.
+    # Only when neura moves to a new LLVM commit is LLVM built here (~3-4 h,
+    # once) and then published so later runs skip it.
+    timeout-minutes: 350
+    permissions:
+      contents: write  # publish the prebuilt LLVM release (non-PR runs only)
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: checkout commits under test
+        env:
+          SUBMODULES: neura zeonica
+        run: scripts/checkout_refs.sh "${{ needs.resolve.outputs.neura_sha }}" "${{ needs.resolve.outputs.zeonica_sha }}" ""
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.NEURA_PY_VERSION }}
+      - name: install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build ccache lld clang zstd
+          python -m pip install pybind11==2.13.6 nanobind==2.15.0 pyyaml
+          echo "LLVM_COMMIT=$(scripts/llvm_commit.sh)" >> "$GITHUB_ENV"
+
+      - name: fetch prebuilt LLVM ${{ env.LLVM_COMMIT }}
+        id: prebuilt
+        run: |
+          if scripts/fetch_llvm.sh "${LLVM_DIR}"; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no prebuilt LLVM for ${LLVM_COMMIT}; building it once and publishing it"
+            rm -rf "${LLVM_DIR}"
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fallback when no release exists yet: build from source.
+      - name: LLVM build cache
+        if: steps.prebuilt.outputs.hit != 'true'
+        id: llvm-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.LLVM_DIR }}
+          key: ${{ runner.os }}-llvm-py${{ env.NEURA_PY_VERSION }}-${{ env.LLVM_COMMIT }}-v1
+      - name: LLVM ccache
+        if: steps.prebuilt.outputs.hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-ccache-llvm-${{ env.LLVM_COMMIT }}
+      - name: build LLVM ${{ env.LLVM_COMMIT }}
+        if: steps.prebuilt.outputs.hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
+        run: PYTHON="$(which python)" scripts/build_llvm.sh "${LLVM_DIR}"
+      - name: publish prebuilt LLVM
+        if: steps.prebuilt.outputs.hit != 'true' && github.event_name != 'pull_request'
+        run: |
+          asset="llvm-${LLVM_COMMIT}-$(uname -m)-ubuntu22.04.tar.zst"
+          scripts/package_llvm.sh "${LLVM_DIR}" "${RUNNER_TEMP}/${asset}"
+          gh release create "llvm-${LLVM_COMMIT}" "${RUNNER_TEMP}/${asset}" --latest=false \
+              --title "Prebuilt LLVM ${LLVM_COMMIT}" \
+              --notes "LLVM/MLIR at neura's pinned commit, trimmed for building neura (scripts/package_llvm.sh). Used by the alignment workflow via scripts/fetch_llvm.sh." \
+            || gh release upload "llvm-${LLVM_COMMIT}" "${RUNNER_TEMP}/${asset}" --clobber
+
+      - name: neura ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}-neura
+          key: ${{ runner.os }}-ccache-neura-${{ env.LLVM_COMMIT }}-${{ needs.resolve.outputs.neura_sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-neura-${{ env.LLVM_COMMIT }}-
+      - name: build neura
+        env:
+          CCACHE_DIR: ${{ env.CCACHE_DIR }}-neura
+        run: |
+          echo "LLVM_BUILD_DIR=${LLVM_DIR}/build" >> "$GITHUB_ENV"
+          LLVM_BUILD_DIR="${LLVM_DIR}/build" PYTHON="$(which python)" scripts/build_neura.sh
+
+      - name: compile kernels with neura + compute golden results
+        run: |
+          # Kernels compile independently and neura's mapper is single-threaded.
+          python tools/align.py run --all --sims "" --stages compile,prepare -j 16 \
+            || echo "::warning::some kernels failed to compile; see the report job"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: programs
+          path: |
+            build/*/
+            !build/*/golden/golden
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  zeonica:
+    name: zeonica
+    needs: [resolve, neura]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: checkout commits under test
+        env:
+          SUBMODULES: zeonica
+        run: scripts/checkout_refs.sh "" "${{ needs.resolve.outputs.zeonica_sha }}" ""
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: third_party/zeonica/go.mod
+          cache-dependency-path: third_party/zeonica/go.sum
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.NEURA_PY_VERSION }}
+      - run: python -m pip install pyyaml
+      - uses: actions/download-artifact@v8
+        with:
+          name: programs
+          path: build
+      - name: build zeonica-runner
+        working-directory: tools/zeonica-runner
+        run: |
+          go mod tidy
+          go build -o "${GITHUB_WORKSPACE}/build/bin/zeonica-runner" .
+      - name: run kernels on zeonica
+        run: |
+          # Wrong results are judged by the report job; here only make sure
+          # every kernel actually produced a status (i.e. nothing crashed).
+          python tools/align.py run --all --sims zeonica --stages sim || true
+          missing=0
+          for k in build/*/program.yaml; do
+            d=$(dirname "$k")
+            [[ -f "$d/status_zeonica.json" ]] || { echo "::error::$(basename "$d"): zeonica stage did not run"; missing=1; }
+          done
+          exit "${missing}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: results-zeonica
+          path: |
+            build/*/zeonica.json
+            build/*/zeonica.log
+            build/*/status_zeonica.json
+
+  # ---------------------------------------------------------------------------
+  vectorcgra-model:
+    name: vectorcgra model (verilate)
+    needs: [resolve]
+    if: needs.resolve.outputs.run == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: checkout commits under test
+        env:
+          SUBMODULES: vectorcgra
+        run: scripts/checkout_refs.sh "" "" "${{ needs.resolve.outputs.vectorcgra_sha }}"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.VECTORCGRA_PY_VERSION }}
+      - name: install VectorCGRA dependencies
+        run: scripts/setup_vectorcgra.sh
+      # The Verilator model uses TranslatableDivRTL in place of DivRTL; make
+      # sure it still mirrors upstream and divides bit-exactly.
+      - name: check TranslatableDivRTL
+        run: |
+          python tools/vcgra_ext/check_divrtl_sync.py
+          (cd "$(mktemp -d)" && python -W ignore "${GITHUB_WORKSPACE}/tools/vcgra_ext/test_udiv.py" --verilator)
+      - name: model cache
+        id: model-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.VCGRA_MODEL_DIR }}
+          key: vcgra-model-${{ needs.resolve.outputs.vectorcgra_sha }}-${{ hashFiles('tools/vectorcgra_runner.py') }}-${{ env.VERILATOR_VERSION }}-py${{ env.VECTORCGRA_PY_VERSION }}
+      - name: translate + verilate CgraRTL
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${VCGRA_MODEL_DIR}"
+          cd "${VCGRA_MODEL_DIR}"
+          python -W ignore "${GITHUB_WORKSPACE}/tools/vectorcgra_runner.py" --build-model-only
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vectorcgra-model
+          path: ${{ env.VCGRA_MODEL_DIR }}
+          retention-days: 3
+
+  vectorcgra:
+    name: vectorcgra / ${{ matrix.kernel }}
+    needs: [resolve, neura, vectorcgra-model]
+    runs-on: ubuntu-22.04
+    # Per-kernel wall-clock limits live in kernels/<k>/kernel.yaml
+    # (vectorcgra.timeout); this is only the outer GitHub limit.
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ${{ fromJson(needs.resolve.outputs.kernels) }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: checkout commits under test
+        env:
+          SUBMODULES: vectorcgra
+        run: scripts/checkout_refs.sh "" "" "${{ needs.resolve.outputs.vectorcgra_sha }}"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.VECTORCGRA_PY_VERSION }}
+      - name: install VectorCGRA dependencies
+        run: scripts/setup_vectorcgra.sh
+      - uses: actions/download-artifact@v8
+        with:
+          name: programs
+          path: build
+      - uses: actions/download-artifact@v8
+        with:
+          name: vectorcgra-model
+          path: ${{ env.VCGRA_MODEL_DIR }}
+      - name: run ${{ matrix.kernel }} on VectorCGRA
+        run: |
+          python tools/align.py run "${{ matrix.kernel }}" --sims vectorcgra --stages sim \
+            --vectorcgra-workdir "${VCGRA_MODEL_DIR}" || true
+          grep -h "^vectorcgra:" "build/${{ matrix.kernel }}/vectorcgra.log" || true
+          # Wrong results are judged by the report job; fail here only if the
+          # stage itself never ran (a crash in the harness, not the kernel).
+          if [[ -f "build/${{ matrix.kernel }}/program.yaml" && ! -f "build/${{ matrix.kernel }}/status_vectorcgra.json" ]]; then
+            echo "::error::vectorcgra stage did not run for ${{ matrix.kernel }}"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: results-vectorcgra-${{ matrix.kernel }}
+          path: |
+            build/${{ matrix.kernel }}/vectorcgra.json
+            build/${{ matrix.kernel }}/vectorcgra.log
+            build/${{ matrix.kernel }}/status_vectorcgra.json
+
+  # ---------------------------------------------------------------------------
+  report:
+    name: report
+    needs: [resolve, neura, zeonica, vectorcgra]
+    if: always() && needs.resolve.outputs.run == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: checkout commits under test
+        env:
+          SUBMODULES: zeonica
+        run: scripts/checkout_refs.sh "" "${{ needs.resolve.outputs.zeonica_sha }}" ""
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.NEURA_PY_VERSION }}
+      - run: python -m pip install pyyaml
+      - uses: actions/download-artifact@v8
+        with:
+          name: programs
+          path: build
+      - uses: actions/download-artifact@v8
+        with:
+          name: results-zeonica
+          path: build
+      # Each per-kernel artifact is rooted at build/<kernel>/ (upload-artifact
+      # strips the common prefix), so put each one back into its kernel dir.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: results-vectorcgra-*
+          path: ${{ runner.temp }}/vectorcgra-results
+      - name: place VectorCGRA results
+        run: |
+          for a in "${RUNNER_TEMP}"/vectorcgra-results/results-vectorcgra-*; do
+            [[ -d "$a" ]] || continue
+            k="${a##*/results-vectorcgra-}"
+            mkdir -p "build/${k}"
+            cp -a "$a"/. "build/${k}/"
+          done
+          ls build/*/status_vectorcgra.json
+      - name: check results against golden
+        run: python tools/align.py check
+      - name: summary
+        run: |
+          {
+            echo "## IR alignment (${{ needs.resolve.outputs.mode }})"
+            echo "neura \`${{ needs.resolve.outputs.neura_sha }}\` · zeonica \`${{ needs.resolve.outputs.zeonica_sha }}\` · VectorCGRA \`${{ needs.resolve.outputs.vectorcgra_sha }}\`"
+            echo
+            python tools/align.py summary --markdown
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: alignment-report
+          path: |
+            build/*/report.json
+            build/*/status_*.json
+            build/*/*.log
+            build/*/program.yaml
+            build/*/neura/tmp-generated-instructions.*
+      - name: gate (fail on results worse than expected.yaml)
+        run: python tools/align.py summary --gate --require-all
+      - name: remember this combination as tested
+        if: success() && needs.resolve.outputs.mode == 'latest'
+        run: mkdir -p .alignment-tested && date > .alignment-tested/stamp
+      - if: success() && needs.resolve.outputs.mode == 'latest'
+        uses: actions/cache/save@v6
+        with:
+          path: .alignment-tested
+          key: ${{ needs.resolve.outputs.tested_key }}
+
+  # ---------------------------------------------------------------------------
+  # Optional: when the latest upstream commits pass, open/refresh a PR that
+  # bumps the pinned submodules. Enable with the repository variable
+  # AUTO_BUMP_SUBMODULES=true.
+  bump:
+    name: bump pinned submodules
+    needs: [resolve, report]
+    if: >-
+      success() && needs.resolve.outputs.mode == 'latest' &&
+      github.event_name != 'pull_request' && vars.AUTO_BUMP_SUBMODULES == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: update gitlinks
+        id: bump
+        run: |
+          git update-index --cacheinfo "160000,${{ needs.resolve.outputs.neura_sha }},third_party/neura"
+          git update-index --cacheinfo "160000,${{ needs.resolve.outputs.zeonica_sha }},third_party/zeonica"
+          git update-index --cacheinfo "160000,${{ needs.resolve.outputs.vectorcgra_sha }},third_party/VectorCGRA"
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: push branch and open PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch=auto/bump-submodules
+          git checkout -B "${branch}"
+          git commit -m "Bump submodules to aligned upstream commits" \
+            -m "neura ${{ needs.resolve.outputs.neura_sha }}" \
+            -m "zeonica ${{ needs.resolve.outputs.zeonica_sha }}" \
+            -m "VectorCGRA ${{ needs.resolve.outputs.vectorcgra_sha }}"
+          git push --force origin "${branch}"
+          gh pr view "${branch}" >/dev/null 2>&1 || \
+            gh pr create --head "${branch}" --title "Bump submodules to aligned upstream commits" \
+              --body "The alignment workflow passed on these upstream commits (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

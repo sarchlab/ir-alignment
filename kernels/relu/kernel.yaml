@@ -1,0 +1,11 @@
+name: relu
+description: "output[i] = max(input[i], 0) over 32 elements"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/relu/relu_int.cpp
+function: kernel
+args:
+  - {name: input, kind: array, size: 32, init: "(i * 13) % 31 - 15"}
+  - {name: output, kind: array, size: 32, init: "-99"}
+
+# Runs finish in a few hundred cycles; the cap turns a hang into a quick
+# failure (VectorCGRA's Verilator backend runs ~140 cycles/s).
+vectorcgra: {max_cycles: 8000, timeout: 1800}

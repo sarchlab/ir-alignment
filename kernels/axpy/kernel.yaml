@@ -1,0 +1,11 @@
+name: axpy
+description: "y[i] = 3 * x[i] + y[i], 16 elements"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/axpy/axpy_int.cpp
+function: kernel_axpy_int
+args:
+  - {name: x, kind: array, size: 16, init: "i + 1"}
+  - {name: y, kind: array, size: 16, init: "100 + 7 * i - (i % 3) * 50"}
+
+# Runs finish in a few hundred cycles; the cap turns a hang into a quick
+# failure (VectorCGRA's Verilator backend runs ~140 cycles/s).
+vectorcgra: {max_cycles: 8000, timeout: 1800}

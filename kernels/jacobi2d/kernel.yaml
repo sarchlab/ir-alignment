@@ -1,0 +1,10 @@
+name: jacobi2d
+description: "One Jacobi-2D 5-point stencil sweep over the 6x6 interior of an 8x8 grid"
+source: kernels/jacobi2d/jacobi2d_int.c
+function: kernel_jacobi2d_int
+args:
+  - {name: A, kind: array, size: 64, init: "(i * 13) % 17 - 5"}
+  - {name: B, kind: array, size: 64, init: "-1000 - i"}
+
+# 36 stencil points at II~13 (~500 cycles); generous cap for stalls.
+vectorcgra: {max_cycles: 20000, timeout: 2400}

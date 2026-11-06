@@ -1,0 +1,84 @@
+# Zeonica architecture used by ir-alignment.
+#
+# 4x4 mesh matching Neura's test/arch_spec/architecture.yaml, with one
+# word-addressed shared memory visible to every tile (banked SRAM model,
+# 1-cycle latency). The
+# alignment pipeline places every kernel array in this single address space,
+# mirroring VectorCGRA's global data memory.
+architecture:
+  name: "NeuraMultiCgra"
+  version: "1.0"
+
+multi_cgra_defaults:
+  base_topology: "mesh"
+  rows: 1
+  columns: 1
+
+cgra_defaults:
+  rows: 4
+  columns: 4
+  ctrl_mem_items: 20
+  base_topology: "mesh"
+
+tile_defaults:
+  num_registers: 32
+  local_memory_words: 2048
+  fu_types: ["add", "mul", "div", "fadd", "fmul", "fdiv", "logic", "cmp", "sel", "type_conv", "vfmul", "fadd_fadd", "fmul_fadd", "grant", "loop_control", "phi", "constant", "mem", "return", "mem_indexed", "alloca", "shift"]
+
+link_defaults:
+  latency: 1
+  bandwidth: 32
+
+extensions:
+  crossbar: false
+
+simulator:
+  execution_model: "serial"
+  execution_policy: "in_order_dataflow"
+  enable_fifo_model: false
+
+  logging:
+    enabled: false
+    enableTrace: false
+    file: "<test>.json.log"
+
+  driver:
+    name: "Driver"
+    frequency: "1GHz"
+    port_incoming_buffer_depth: 4
+    port_outgoing_buffer_depth: 4
+
+  device:
+    name: "Device"
+    frequency: "1GHz"
+    bind_to_architecture: true
+    memory_mode: "shared"
+    # Neura schedules LOAD/STORE assuming single-cycle, conflict-free memory
+    # (VectorCGRA runs these kernels with combinational data-memory access).
+    # The `ideal` model has a fixed 5-cycle latency, which makes the memory
+    # side fall behind the loop control and lets RETURN end the simulation
+    # before the last stores retire, so use the compiler-oriented banked SRAM
+    # model with 1-cycle latency and enough banks to avoid artificial conflicts.
+    shared_memory_model: "banked"
+    shared_memory_banks: 16
+    shared_memory_base_latency: 1
+    shared_memory_bank_interleave_bytes: 4
+    port_incoming_buffer_depth: 8
+    port_outgoing_buffer_depth: 8
+    memory_share:
+      - {tile_x: 0, tile_y: 0, group: 0}
+      - {tile_x: 1, tile_y: 0, group: 0}
+      - {tile_x: 2, tile_y: 0, group: 0}
+      - {tile_x: 3, tile_y: 0, group: 0}
+      - {tile_x: 0, tile_y: 1, group: 0}
+      - {tile_x: 1, tile_y: 1, group: 0}
+      - {tile_x: 2, tile_y: 1, group: 0}
+      - {tile_x: 3, tile_y: 1, group: 0}
+      - {tile_x: 0, tile_y: 2, group: 0}
+      - {tile_x: 1, tile_y: 2, group: 0}
+      - {tile_x: 2, tile_y: 2, group: 0}
+      - {tile_x: 3, tile_y: 2, group: 0}
+      - {tile_x: 0, tile_y: 3, group: 0}
+      - {tile_x: 1, tile_y: 3, group: 0}
+      - {tile_x: 2, tile_y: 3, group: 0}
+      - {tile_x: 3, tile_y: 3, group: 0}

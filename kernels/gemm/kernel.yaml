@@ -1,0 +1,15 @@
+name: gemm
+description: "PolyBench integer GEMM C += A*B with non-square NI=4, NJ=6, NK=5"
+source: third_party/zeonica/test/Zeonica_Testbench/kernel/gemm/gemm_int.c
+function: kernel_int
+cflags: [-DNI=4, -DNJ=6, -DNK=5]
+args:
+  - {name: ni, kind: scalar, value: 4}
+  - {name: nj, kind: scalar, value: 6}
+  - {name: nk, kind: scalar, value: 5}
+  - {name: C, kind: array, size: 24, init: "(i * 5) % 13 - 4"}
+  - {name: A, kind: array, size: 20, init: "(i * 7) % 17 - 6"}
+  - {name: B, kind: array, size: 30, init: "(i * 3 + 2) % 19 - 9"}
+
+# 4*5*6 = 120 inner iterations at II~17 (~2-3k cycles).
+vectorcgra: {max_cycles: 50000, timeout: 3000}
