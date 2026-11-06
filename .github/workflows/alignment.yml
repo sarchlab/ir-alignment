@@ -394,9 +394,23 @@ jobs:
           path: build
       - uses: actions/download-artifact@v8
         with:
-          pattern: results-*
+          name: results-zeonica
           path: build
-          merge-multiple: true
+      # Each per-kernel artifact is rooted at build/<kernel>/ (upload-artifact
+      # strips the common prefix), so put each one back into its kernel dir.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: results-vectorcgra-*
+          path: ${{ runner.temp }}/vectorcgra-results
+      - name: place VectorCGRA results
+        run: |
+          for a in "${RUNNER_TEMP}"/vectorcgra-results/results-vectorcgra-*; do
+            [[ -d "$a" ]] || continue
+            k="${a##*/results-vectorcgra-}"
+            mkdir -p "build/${k}"
+            cp -a "$a"/. "build/${k}/"
+          done
+          ls build/*/status_vectorcgra.json
       - name: check results against golden
         run: python tools/align.py check
       - name: summary
