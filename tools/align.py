@@ -215,7 +215,15 @@ def stage_check(spec, d: Path, sims) -> bool:
   for sim in sims:
     res = read_json(d / f"{sim}.json")
     if golden is None or res is None:
-      report["simulators"][sim] = {"passed": False, "error": "no result (see status_*.json / logs)"}
+      status = read_json(d / f"status_{sim}.json", {}) or {}
+      reason = (status.get("detail") or "").strip().splitlines()
+      if golden is None:
+        reason = ["no golden result"]
+      elif not status:
+        reason = [f"{sim} stage did not run"]
+      report["simulators"][sim] = {
+          "passed": False,
+          "error": (reason[0] if reason else "no result") + " (see status_*.json / logs)"}
       all_ok = False
       continue
     r = cmp.compare(spec, golden, res)
@@ -282,7 +290,13 @@ def cmd_run(args) -> int:
     if ok:
       for sim in sims:
         if sim in stages or "sim" in stages:
-          (stage_zeonica if sim == "zeonica" else stage_vectorcgra)(spec, d, args)
+          t0 = time.time()
+          try:
+            (stage_zeonica if sim == "zeonica" else stage_vectorcgra)(spec, d, args)
+          except Exception as e:  # a harness bug, not a kernel result
+            record_stage(d, sim, False, time.time() - t0,
+                         f"ir-alignment harness error: {e!r}\n{traceback.format_exc()}")
+            print(f"[{spec.name}] {sim}: harness error: {e!r}", file=sys.stderr)
     passed = stage_check(spec, d, sims) if ok else False
     if not ok:
       write_json(d / "report.json", {

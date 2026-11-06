@@ -49,8 +49,8 @@ permissions:
   contents: read
 
 env:
-  NEURA_PYTHON: "3.11"
-  VECTORCGRA_PYTHON: "3.12"
+  NEURA_PY_VERSION: "3.11"
+  VECTORCGRA_PY_VERSION: "3.12"
   LLVM_DIR: ${{ github.workspace }}/llvm-project
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_COMPRESS: "true"
@@ -156,7 +156,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.NEURA_PYTHON }}
+          python-version: ${{ env.NEURA_PY_VERSION }}
       - name: install toolchain
         run: |
           sudo apt-get update -qq
@@ -182,7 +182,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.LLVM_DIR }}
-          key: ${{ runner.os }}-llvm-py${{ env.NEURA_PYTHON }}-${{ env.LLVM_COMMIT }}-v1
+          key: ${{ runner.os }}-llvm-py${{ env.NEURA_PY_VERSION }}-${{ env.LLVM_COMMIT }}-v1
       - name: LLVM ccache
         if: steps.prebuilt.outputs.hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v6
@@ -249,7 +249,7 @@ jobs:
           cache-dependency-path: third_party/zeonica/go.sum
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.NEURA_PYTHON }}
+          python-version: ${{ env.NEURA_PY_VERSION }}
       - run: python -m pip install pyyaml
       - uses: actions/download-artifact@v8
         with:
@@ -295,7 +295,7 @@ jobs:
         run: scripts/checkout_refs.sh "" "" "${{ needs.resolve.outputs.vectorcgra_sha }}"
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.VECTORCGRA_PYTHON }}
+          python-version: ${{ env.VECTORCGRA_PY_VERSION }}
       - name: install VectorCGRA dependencies
         run: scripts/setup_vectorcgra.sh
       # The Verilator model uses TranslatableDivRTL in place of DivRTL; make
@@ -309,7 +309,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.VCGRA_MODEL_DIR }}
-          key: vcgra-model-${{ needs.resolve.outputs.vectorcgra_sha }}-${{ hashFiles('tools/vectorcgra_runner.py') }}-${{ env.VERILATOR_VERSION }}-py${{ env.VECTORCGRA_PYTHON }}
+          key: vcgra-model-${{ needs.resolve.outputs.vectorcgra_sha }}-${{ hashFiles('tools/vectorcgra_runner.py') }}-${{ env.VERILATOR_VERSION }}-py${{ env.VECTORCGRA_PY_VERSION }}
       - name: translate + verilate CgraRTL
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
@@ -341,7 +341,7 @@ jobs:
         run: scripts/checkout_refs.sh "" "" "${{ needs.resolve.outputs.vectorcgra_sha }}"
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.VECTORCGRA_PYTHON }}
+          python-version: ${{ env.VECTORCGRA_PY_VERSION }}
       - name: install VectorCGRA dependencies
         run: scripts/setup_vectorcgra.sh
       - uses: actions/download-artifact@v8
@@ -386,7 +386,7 @@ jobs:
         run: scripts/checkout_refs.sh "" "${{ needs.resolve.outputs.zeonica_sha }}" ""
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.NEURA_PYTHON }}
+          python-version: ${{ env.NEURA_PY_VERSION }}
       - run: python -m pip install pyyaml
       - uses: actions/download-artifact@v8
         with:
